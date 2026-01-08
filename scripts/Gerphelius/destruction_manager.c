@@ -1,33 +1,28 @@
+/*
+* TODO:
+*       configure impulse to destroy per object or type
+*
+*       add extendended config to fix some objects rotations on destroy
+*       add sounds
+*       remove wires from electric poles
+*       area with no object damage with admin debug
+*       clear deletedObjects array on disconnect
+*       add particles
+*
+*       refactor according to dayz guidelines
+*       ToLower all p3d name checks
+*/
+
 class CXFDestructibleObject
 {
-    void CXFDestructibleObject(notnull Object obj)
+    void CXFDestructibleObject(notnull Object obj, vector contactPos, vector contactDir, string p3dFullPath = "")
     {
         m_objectLink = new OLinkT(obj);
-        m_flags = obj.GetFlags();
         m_events = obj.GetEventMask();
-        //m_interactionLayer = dBodyGetInteractionLayer(obj);
         obj.GetTransform(m_transform);
-
-        //obj.SetScale(0.000001);
-        //obj.ClearFlags(m_flags, true);
-        obj.ClearEventMask(m_events);
-        obj.SetEventMask(EntityEvent.NOTVISIBLE);
-        obj.Update();
-
-#ifndef SERVER
-        dBodyActive(obj, ActiveState.INACTIVE);
-        dBodySetSolid(obj, false);
-#endif
-
-#ifdef SERVER
-        dBodyDestroy(obj);
-#endif
-        /*
-        * 	Not working for some objects on map (like wall_cbrk_5 located on <12998.141602, 6.768738, 10050.177734>).
-        *	It applies layers to similar objects nearby instead of single selected object.
-        *	Without this function call, car wheels interact with objects like if it still has collision.
-        */
-        // dBodySetInteractionLayer(obj, 0);
+        m_contactPos = contactPos;
+        m_contactDir = contactDir;
+        m_p3dFullPath = p3dFullPath;
     }
 
     void ~CXFDestructibleObject()
@@ -35,15 +30,24 @@ class CXFDestructibleObject
 #ifndef SERVER
         Object obj = GetObject();
 
-        obj.SetFlags(m_flags, true);
         obj.SetEventMask(m_events);
         obj.SetTransform(m_transform);
         obj.Update();
+#endif
+    }
 
+    void Destroy()
+    {
+        Object obj = GetObject();
 
-        dBodyActive(obj, ActiveState.ACTIVE);
-        dBodySetSolid(obj, true);
-        //dBodySetInteractionLayer(obj, m_interactionLayer);
+        obj.SetScale(0.000001);
+        obj.SetPosition(vector.Zero);
+        obj.ClearEventMask(m_events);
+        obj.SetEventMask(EntityEvent.NOTVISIBLE);
+        obj.Update();
+
+#ifdef SERVER
+        dBodyDestroy(obj);
 #endif
     }
 
@@ -52,11 +56,27 @@ class CXFDestructibleObject
         return m_objectLink.Ptr();
     }
 
+    vector GetContactPos()
+    {
+        return m_contactPos;
+    }
+
+    vector GetContactDir()
+    {
+        return m_contactDir;
+    }
+
+    string GetP3DFullPath()
+    {
+        return m_p3dFullPath;
+    }
+
     private ref OLinkT m_objectLink = null;
-    private int m_flags = 0;
     private int m_events = 0;
-    private int m_interactionLayer = 0;
     private vector m_transform[4] = {};
+    private vector m_contactPos = vector.Zero;
+    private vector m_contactDir = vector.Zero;
+    private string m_p3dFullPath = "";
 }
 
 class CXFDestructionManager : Managed
@@ -67,7 +87,7 @@ class CXFDestructionManager : Managed
         s_config = CXFConfig.Get();
     }
 
-    static void MarkForDestroy(notnull Object obj, vector contactPos, vector contactDir, CXFObjectType type)
+    static void MarkForDestroy(notnull Object obj, vector contactPos, vector contactDir, string p3dFullPath)
     {
         if (g_Game.IsDedicatedServer())
         {
@@ -75,7 +95,7 @@ class CXFDestructionManager : Managed
 
             if (!s_markedObjects.Contains(objId))
             {
-                s_markedObjects[objId] = new CXFMarkedObject(obj, contactPos, contactDir, !!type);
+                s_markedObjects[objId] = new CXFDestructibleObject(obj, contactPos, contactDir, p3dFullPath);
             }
         }
     }
@@ -88,15 +108,17 @@ class CXFDestructionManager : Managed
 
             rpc.Write(s_markedObjects.Count());
 
-            foreach(CXFMarkedObject markedObj : s_markedObjects)
+            foreach(CXFDestructibleObject markedObj : s_markedObjects)
             {
                 Object obj = markedObj.GetObject();
 
                 rpc.Write(obj);
                 rpc.Write(markedObj.GetContactPos());
                 rpc.Write(markedObj.GetContactDir());
-                rpc.Write(markedObj.IsAnimated());
-                s_destroyedObjects.Insert(new CXFDestructibleObject(obj));
+                rpc.Write(markedObj.GetP3DFullPath());
+
+                markedObj.Destroy();
+                s_destroyedObjects.Insert(markedObj);
             }
 
             rpc.Send(null, CXFRPC.OBJECT_DESTROYED, true, null);
@@ -117,17 +139,23 @@ class CXFDestructionManager : Managed
             foreach(CXFDestructibleObject destructibleObj : s_destroyedObjects)
             {
                 rpc.Write(destructibleObj.GetObject());
+                rpc.Write(destructibleObj.GetContactPos());
+                rpc.Write(destructibleObj.GetContactDir());
+                rpc.Write(destructibleObj.GetP3DFullPath());
             }
 
             rpc.Send(null, CXFRPC.OBJECT_DESTROYED, true, identity);
         }
     }
 
-    static void DestroyObjectOnClient(notnull Object obj)
+    static void DestroyObjectOnClient(notnull Object obj, vector contactPos, vector contactDir, string p3dFullPath)
     {
         if (!g_Game.IsDedicatedServer())
         {
-            s_destroyedObjects.Insert(new CXFDestructibleObject(obj));
+            ref CXFDestructibleObject destructibleObj = new CXFDestructibleObject(obj, contactPos, contactDir, p3dFullPath);
+
+            destructibleObj.Destroy();
+            s_destroyedObjects.Insert(destructibleObj);
         }
     }
 
@@ -141,7 +169,7 @@ class CXFDestructionManager : Managed
         if (object.IsTree())
         {
             // TODO: add impulse config variable for trees
-            return CXFDestructbleData(CXFObjectType.DESTRUCTIBLE_ANIMATED, 2000.0);
+            return CXFDestructbleData(CXFObjectType.TREE, 2000.0);
         }
 
         foreach(CXFObjectInfo destructible : s_config.destructible)
@@ -149,7 +177,7 @@ class CXFDestructionManager : Managed
             string destrName = object.GetDebugName();
             destrName.ToLower();
 
-            if (destrName.Contains(destructible.p3dName))
+            if (destrName.Contains(destructible.p3d))
             {
                 return CXFDestructbleData(CXFObjectType.DESTRUCTIBLE, destructible.impulseThreshold);
             }
@@ -160,9 +188,11 @@ class CXFDestructionManager : Managed
             string animName = object.GetDebugName();
             animName.ToLower();
 
-            if (animName.Contains(animated.p3dName))
+            if (animName.Contains(animated.p3d))
             {
-                return CXFDestructbleData(CXFObjectType.DESTRUCTIBLE_ANIMATED, animated.impulseThreshold);
+                string path = animated.path + animated.p3d + ".p3d";
+
+                return CXFDestructbleData(CXFObjectType.DESTRUCTIBLE_ANIMATED, animated.impulseThreshold, path);
             }
         }
 
@@ -174,9 +204,72 @@ class CXFDestructionManager : Managed
         return s_config;
     }
 
-    private static ref map<int, ref CXFMarkedObject> s_markedObjects = new map<int, ref CXFMarkedObject>();
+    static void SetObjectOverrides(array<ref CXFObjectOverride> overrides)
+    {
+        s_config.objectOverrides = overrides;
+    }
+
+    static void DebugSpawnDestructibleObjects()
+    {
+        vector startPos = "4250.0 340.0 10372.0";
+        float span = 10.0;
+
+        float rows = Math.Sqrt(s_config.destructible.Count());
+        float cols = Math.Ceil(rows);
+
+        for (int row = 0; row < rows; ++row)
+        {
+            float x = startPos[0] + (row * span);
+
+            for (int col = 0; col < cols; ++col)
+            {
+                float z = startPos[2] + (col * span);
+
+                CXFObjectInfo info = s_config.destructible.Get((row + col) + row * cols);
+
+                if (!info) return;
+
+                string p3dFullPath = info.path + info.p3d + ".p3d";
+                Object created = g_Game.CreateStaticObjectUsingP3D(p3dFullPath, Vector(x, startPos[1], z), vector.Zero, 1.0, false);
+
+                if (!created)
+                {
+                    Print(info.p3d);
+                }
+            }
+        }
+
+        startPos = Vector(4250.0 + cols * span, 340.0, 10372.0);
+
+        rows = Math.Sqrt(s_config.destructibleAnimated.Count());
+        cols = Math.Ceil(rows);
+
+        for (int rowA = 0; rowA < rows; ++rowA)
+        {
+            x = startPos[0] + (rowA * span);
+
+            for (int colA = 0; colA < cols; ++colA)
+            {
+                z = startPos[2] + (colA * span);
+
+                info = s_config.destructibleAnimated.Get((rowA + colA) + rowA * cols);
+
+                if (!info) return;
+
+                p3dFullPath = info.path + info.p3d + ".p3d";
+                created = g_Game.CreateStaticObjectUsingP3D(p3dFullPath, Vector(x, startPos[1], z), vector.Zero, 1.0, false);
+
+                if (!created)
+                {
+                    Print(info.p3d);
+                }
+            }
+        }
+    }
+
+    private static ref map<int, ref CXFDestructibleObject> s_markedObjects = new map<int, ref CXFDestructibleObject>();
     private static ref array<ref CXFDestructibleObject> s_destroyedObjects = {};
-    private static ref CXFConfigData s_config = null;
+    private static ref CXFConfigData s_config = new CXFConfigData();
 
     private void CXFDestructionManager() {}
     private void ~CXFDestructionManager() {}

@@ -11,7 +11,7 @@ modded class CarScript
 
             if (destrData.m_type != CXFObjectType.NONE && data.Impulse >= destrData.m_impulse)
             {
-                CXFDestructionManager.MarkForDestroy(object, data.Position, GetSpeed().Normalized(), destrData.m_type);
+                CXFDestructionManager.MarkForDestroy(object, data.Position, GetSpeed().Normalized(), destrData.p3d);
 
                 if (!m_ContactCache.Contains(zoneName)) return;
 
@@ -29,8 +29,4 @@ modded class CarScript
 
         CXFDestructionManager.DestroyMarkedObjects();
     }
-    /*
-    proto native SurfaceInfo WheelGetSurface( int wheelIdx );
-
-    */
 }
